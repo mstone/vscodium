@@ -1,5 +1,5 @@
 diff --git a/extensions/github-authentication/src/githubServer.ts b/extensions/github-authentication/src/githubServer.ts
-index 3002e937c81..9674d8d2089 100644
+index 92313d030a7..0b173ac0fb9 100644
 --- a/extensions/github-authentication/src/githubServer.ts
 +++ b/extensions/github-authentication/src/githubServer.ts
 @@ -3,41 +3,13 @@
@@ -58,36 +58,42 @@ index 3002e937c81..9674d8d2089 100644
  async function getScopes(token: string, serverUri: vscode.Uri, logger: Log): Promise<string[]> {
  	try {
  		logger.info('Getting token scopes...');
-@@ -115,315 +80,49 @@ async function getUserInfo(token: string, serverUri: vscode.Uri, logger: Log): P
+@@ -115,344 +80,61 @@ async function getUserInfo(token: string, serverUri: vscode.Uri, logger: Log): P
  export class GitHubServer implements IGitHubServer {
  	friendlyName = 'GitHub';
  	type = AuthProviderType.github;
 -	private _statusBarItem: vscode.StatusBarItem | undefined;
 -	private _onDidManuallyProvideToken = new vscode.EventEmitter<string | undefined>();
--
+ 
 -	private _pendingStates = new Map<string, string[]>();
--	private _codeExchangePromises = new Map<string, { promise: Promise<string>, cancel: vscode.EventEmitter<void> }>();
+-	private _codeExchangePromises = new Map<string, { promise: Promise<string>; cancel: vscode.EventEmitter<void> }>();
 -	private _statusBarCommandId = `${this.type}.provide-manually`;
--	private _disposable: vscode.Disposable;
++	private _onDidManuallyProvideToken = new vscode.EventEmitter<string | undefined>();
++	private _statusBarCommandId = `github.provide-manually`;
+ 	private _disposable: vscode.Disposable;
 -	private _uriHandler = new UriEventHandler(this._logger);
  
++	// @ts-ignore unused parameters
  	constructor(private readonly _supportDeviceCodeFlow: boolean, private readonly _logger: Log, private readonly _telemetryReporter: ExperimentationTelemetry) {
 -		this._disposable = vscode.Disposable.from(
 -			vscode.commands.registerCommand(this._statusBarCommandId, () => this.manuallyProvideUri()),
 -			vscode.window.registerUriHandler(this._uriHandler));
-+		this._supportDeviceCodeFlow;
++		this._disposable = vscode.commands.registerCommand(this._statusBarCommandId, async () => {
++			const token = await vscode.window.showInputBox({ prompt: 'Token', ignoreFocusOut: true });
++			this._onDidManuallyProvideToken.fire(token);
++		});
  	}
  
  	dispose() {
--		this._disposable.dispose();
--	}
--
+ 		this._disposable.dispose();
+ 	}
+ 
 -	// TODO@joaomoreno TODO@TylerLeonhardt
 -	private async isNoCorsEnvironment(): Promise<boolean> {
 -		const uri = await vscode.env.asExternalUri(vscode.Uri.parse(`${vscode.env.uriScheme}://vscode.github-authentication/dummy`));
 -		return (uri.scheme === 'https' && /^((insiders\.)?vscode|github)\./.test(uri.authority)) || (uri.scheme === 'http' && /^localhost/.test(uri.authority));
- 	}
- 
+-	}
+-
  	public async login(scopes: string): Promise<string> {
  		this._logger.info(`Logging in for the following scopes: ${scopes}`);
  
@@ -227,15 +233,15 @@ index 3002e937c81..9674d8d2089 100644
 -			if (!accessTokenResult.ok) {
 -				continue;
 -			}
-+		const token = await vscode.window.showInputBox({ prompt: 'GitHub Personal Access Token', ignoreFocusOut: true });
- 
+-
 -			const accessTokenJson = await accessTokenResult.json();
-+		if (!token) { throw new Error('No token provided'); }
++		const token = await vscode.window.showInputBox({ prompt: 'GitHub Personal Access Token', ignoreFocusOut: true });
  
 -			if (accessTokenJson.error === 'authorization_pending') {
 -				continue;
 -			}
--
++		if (!token) { throw new Error('No token provided'); }
+ 
 -			if (accessTokenJson.error) {
 -				throw new Error(accessTokenJson.error_description);
 +		const tokenScopes = await getScopes(token, this.getServerUri('/'), this._logger); // Example: ['repo', 'user']
@@ -298,7 +304,8 @@ index 3002e937c81..9674d8d2089 100644
 -		};
 -
  	private getServerUri(path: string = '') {
- 		const apiUri = vscode.Uri.parse('https://api.github.com');
+-		const apiUri = vscode.Uri.parse('https://api.github.com');
++		const apiUri = vscode.Uri.parse(vscode.workspace.getConfiguration('github').get<string>('uri') || '', true);
  		return vscode.Uri.parse(`${apiUri.scheme}://${apiUri.authority}${path}`);
  	}
  
@@ -344,7 +351,8 @@ index 3002e937c81..9674d8d2089 100644
 -		this._uriHandler.handleUri(vscode.Uri.parse(uri.trim()));
 -	}
 -
- 	public getUserInfo(token: string): Promise<{ id: string, accountName: string }> {
+-	public getUserInfo(token: string): Promise<{ id: string; accountName: string }> {
++	public getUserInfo(token: string): Promise<{ id: string, accountName: string }> {
  		return getUserInfo(token, this.getServerUri('/user'), this._logger);
  	}
  
@@ -368,7 +376,7 @@ index 3002e937c81..9674d8d2089 100644
 -			});
 -
 -			if (result.ok) {
--				const json: { student: boolean, faculty: boolean } = await result.json();
+-				const json: { student: boolean; faculty: boolean } = await result.json();
 -
 -				/* __GDPR__
 -					"session" : {
@@ -389,4 +397,76 @@ index 3002e937c81..9674d8d2089 100644
 +	public async sendAdditionalTelemetryInfo(_: string): Promise<void> {
  	}
  
- 	public async checkEnterpriseVersion(token: string): Promise<void> {
+-	public async checkEnterpriseVersion(token: string): Promise<void> {
+-		try {
+-
+-			const result = await fetch(this.getServerUri('/meta').toString(), {
+-				headers: {
+-					Authorization: `token ${token}`,
+-					'User-Agent': 'Visual-Studio-Code'
+-				}
+-			});
+-
+-			if (!result.ok) {
+-				return;
+-			}
+-
+-			const json: { verifiable_password_authentication: boolean; installed_version: string } = await result.json();
+-
+-			/* __GDPR__
+-				"ghe-session" : {
+-					"version": { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
+-				}
+-			*/
+-			this._telemetryReporter.sendTelemetryEvent('ghe-session', {
+-				version: json.installed_version
+-			});
+-		} catch {
+-			// No-op
+-		}
++	public async checkEnterpriseVersion(_: string): Promise<void> {
+ 	}
+ }
+ 
+@@ -464,6 +146,7 @@ export class GitHubEnterpriseServer implements IGitHubServer {
+ 	private _statusBarCommandId = `github-enterprise.provide-manually`;
+ 	private _disposable: vscode.Disposable;
+ 
++	// @ts-ignore unused parameters
+ 	constructor(private readonly _logger: Log, private readonly telemetryReporter: ExperimentationTelemetry) {
+ 		this._disposable = vscode.commands.registerCommand(this._statusBarCommandId, async () => {
+ 			const token = await vscode.window.showInputBox({ prompt: 'Token', ignoreFocusOut: true });
+@@ -508,32 +191,6 @@ export class GitHubEnterpriseServer implements IGitHubServer {
+ 		return getUserInfo(token, this.getServerUri('/user'), this._logger);
+ 	}
+ 
+-	public async sendAdditionalTelemetryInfo(token: string): Promise<void> {
+-		try {
+-
+-			const result = await fetch(this.getServerUri('/meta').toString(), {
+-				headers: {
+-					Authorization: `token ${token}`,
+-					'User-Agent': 'Visual-Studio-Code'
+-				}
+-			});
+-
+-			if (!result.ok) {
+-				return;
+-			}
+-
+-			const json: { verifiable_password_authentication: boolean; installed_version: string } = await result.json();
+-
+-			/* __GDPR__
+-				"ghe-session" : {
+-					"version": { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
+-				}
+-			*/
+-			this.telemetryReporter.sendTelemetryEvent('ghe-session', {
+-				version: json.installed_version
+-			});
+-		} catch {
+-			// No-op
+-		}
++	public async sendAdditionalTelemetryInfo(_: string): Promise<void> {
+ 	}
+ }
